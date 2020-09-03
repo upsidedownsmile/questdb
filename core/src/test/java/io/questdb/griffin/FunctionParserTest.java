@@ -32,10 +32,15 @@ import io.questdb.griffin.engine.functions.*;
 import io.questdb.griffin.engine.functions.bool.InStrFunctionFactory;
 import io.questdb.griffin.engine.functions.bool.NotFunctionFactory;
 import io.questdb.griffin.engine.functions.bool.OrFunctionFactory;
+import io.questdb.griffin.engine.functions.columns.IntColumn;
 import io.questdb.griffin.engine.functions.constants.*;
 import io.questdb.griffin.engine.functions.date.SysdateFunctionFactory;
 import io.questdb.griffin.engine.functions.date.ToStrDateFunctionFactory;
 import io.questdb.griffin.engine.functions.date.ToStrTimestampFunctionFactory;
+import io.questdb.griffin.engine.functions.eq.EqDoubleFunctionFactory;
+import io.questdb.griffin.engine.functions.eq.EqIntFunctionFactory;
+import io.questdb.griffin.engine.functions.eq.EqLongFunctionFactory;
+import io.questdb.griffin.engine.functions.groupby.SumIntGroupByFunctionFactory;
 import io.questdb.griffin.engine.functions.math.*;
 import io.questdb.griffin.engine.functions.str.LengthStrFunctionFactory;
 import io.questdb.griffin.engine.functions.str.LengthSymbolFunctionFactory;
@@ -356,6 +361,145 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
         });
         FunctionParser parser = createFunctionParser();
         Assert.assertEquals(0, parser.getFunctionCount());
+    }
+
+    @Test
+    public void testInferTypeExactMatch1() throws SqlException {
+        EqIntFunctionFactory eqInt = new EqIntFunctionFactory();
+        EqDoubleFunctionFactory eqDouble = new EqDoubleFunctionFactory();
+        functions.add(eqInt);
+        functions.add(eqDouble);
+
+        final GenericRecordMetadata metadata = new GenericRecordMetadata();
+        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN));
+        FunctionParser functionParser = createFunctionParser();
+        ObjList<Function> args = new ObjList<>();
+        args.add(new IntColumn(0, 0));
+        args.add(new StrConstant(1, "?"));
+        Function function = functionParser.inferType(expr("x=1"), args);
+
+        Assert.assertEquals(function.getClass().getName(), EqIntFunctionFactory.class.getName() + "$Func"); // there must be a better way
+    }
+
+    @Test
+    public void testInferTypeExactMatch2() throws SqlException {
+        EqIntFunctionFactory eqInt = new EqIntFunctionFactory();
+        EqDoubleFunctionFactory eqDouble = new EqDoubleFunctionFactory();
+        EqLongFunctionFactory eqLong = new EqLongFunctionFactory();
+
+        functions.add(eqInt);
+        functions.add(eqDouble);
+        functions.add(eqLong);
+
+        final GenericRecordMetadata metadata = new GenericRecordMetadata();
+        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN));
+        FunctionParser functionParser = createFunctionParser();
+        ObjList<Function> args = new ObjList<>();
+        args.add(new IntColumn(0, 0));
+        args.add(new StrConstant(1, "?"));
+        Function function = functionParser.inferType(expr("x=1"), args);
+
+        Assert.assertEquals(function.getClass().getName(), EqIntFunctionFactory.class.getName() + "$Func"); // there must be a better way
+    }
+
+    @Test
+    public void testInferTypeExactMatch3() throws SqlException {
+        EqIntFunctionFactory eqInt = new EqIntFunctionFactory();
+        EqDoubleFunctionFactory eqDouble = new EqDoubleFunctionFactory();
+        EqLongFunctionFactory eqLong = new EqLongFunctionFactory();
+
+        functions.add(eqDouble);
+        functions.add(eqLong);
+        functions.add(eqInt);
+
+        final GenericRecordMetadata metadata = new GenericRecordMetadata();
+        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN));
+        FunctionParser functionParser = createFunctionParser();
+        ObjList<Function> args = new ObjList<>();
+        args.add(new IntColumn(0, 0));
+        args.add(new StrConstant(1, "?"));
+        Function function = functionParser.inferType(expr("x=1"), args);
+
+        Assert.assertEquals(function.getClass().getName(), EqIntFunctionFactory.class.getName() + "$Func"); // there must be a better way
+    }
+
+    @Test
+    public void testInferTypeExactMatch4() throws SqlException {
+        EqIntFunctionFactory eqInt = new EqIntFunctionFactory();
+        SumIntGroupByFunctionFactory sumInt = new SumIntGroupByFunctionFactory();
+        EqDoubleFunctionFactory eqDouble = new EqDoubleFunctionFactory();
+        EqLongFunctionFactory eqLong = new EqLongFunctionFactory();
+
+        functions.add(sumInt);
+        functions.add(eqInt);
+        functions.add(eqDouble);
+        functions.add(eqLong);
+
+        final GenericRecordMetadata metadata = new GenericRecordMetadata();
+        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN));
+        FunctionParser functionParser = createFunctionParser();
+        ObjList<Function> args = new ObjList<>();
+        args.add(new IntColumn(0, 0));
+        args.add(new StrConstant(1, "?"));
+        Function function = functionParser.inferType(expr("x=1"), args);
+
+        Assert.assertEquals(function.getClass().getName(), EqIntFunctionFactory.class.getName() + "$Func"); // there must be a better way
+    }
+
+    @Test
+    public void testInferTypeFuzzyMatch1() throws SqlException {
+        EqDoubleFunctionFactory eqDouble = new EqDoubleFunctionFactory();
+        EqLongFunctionFactory eqLong = new EqLongFunctionFactory();
+
+        functions.add(eqDouble);
+        functions.add(eqLong);
+
+        final GenericRecordMetadata metadata = new GenericRecordMetadata();
+        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN));
+        FunctionParser functionParser = createFunctionParser();
+        ObjList<Function> args = new ObjList<>();
+        args.add(new IntColumn(0, 0));
+        args.add(new StrConstant(1, "?"));
+        Function function = functionParser.inferType(expr("x=1"), args);
+
+        Assert.assertEquals(function.getClass().getName(), EqLongFunctionFactory.class.getName() + "$Func"); // there must be a better way
+    }
+
+    @Test
+    public void testInferTypeFuzzyMatch2() throws SqlException {
+        EqDoubleFunctionFactory eqDouble = new EqDoubleFunctionFactory();
+        EqLongFunctionFactory eqLong = new EqLongFunctionFactory();
+
+        functions.add(eqLong);
+        functions.add(eqDouble);
+
+        final GenericRecordMetadata metadata = new GenericRecordMetadata();
+        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN));
+        FunctionParser functionParser = createFunctionParser();
+        ObjList<Function> args = new ObjList<>();
+        args.add(new IntColumn(0, 0));
+        args.add(new StrConstant(1, "?"));
+        Function function = functionParser.inferType(expr("x=1"), args);
+
+        Assert.assertEquals(function.getClass().getName(), EqDoubleFunctionFactory.class.getName() + "$Func"); // there must be a better way
+    }
+
+    @Test
+    public void testInferyingType() throws SqlException {
+        EqIntFunctionFactory eqInt = new EqIntFunctionFactory();
+        EqDoubleFunctionFactory eqDouble = new EqDoubleFunctionFactory();
+        functions.add(eqInt);
+        functions.add(eqDouble);
+
+        final GenericRecordMetadata metadata = new GenericRecordMetadata();
+        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN));
+        FunctionParser functionParser = createFunctionParser();
+        ObjList<Function> args = new ObjList<>();
+        args.add(new IntColumn(0, 0));
+        args.add(new StrConstant(1, "?"));
+        Function function = functionParser.inferType(expr("x=1"), args);
+
+        Assert.assertEquals(function.getClass().getName(), EqIntFunctionFactory.class.getName() + "$Func"); // there must be a better way
     }
 
     @Test

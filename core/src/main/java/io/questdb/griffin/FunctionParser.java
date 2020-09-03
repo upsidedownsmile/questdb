@@ -504,6 +504,256 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
         return new CursorFunction(node.position, sqlCodeGenerator.generate(node.queryModel, sqlExecutionContext));
     }
 
+    public Function inferType(
+            ExpressionNode node,
+            @Transient ObjList<Function> args
+    ) throws SqlException {
+        ObjList<FunctionFactory> overload = functionFactoryCache.getOverloadList(node.token);
+        boolean isNegated = functionFactoryCache.isNegated(node.token);
+        boolean isFlipped = functionFactoryCache.isFlipped(node.token);
+
+        if (overload == null) {
+            throw invalidFunction("unknown function name", node, args);
+        }
+
+        final int argCount;
+        if (args == null) {
+            argCount = 0;
+        } else {
+            argCount = args.size();
+        }
+
+        IntList sparseBindVariablesArgs = new IntList(argCount);  //TODO refactor - allocating
+        sparseBindVariablesArgs.setAll(argCount, 0);
+        for (int i = 0; i < argCount; i++) {
+            final Function arg = args.getQuick(i);
+            if (arg.getType() == ColumnType.STRING && arg instanceof StrConstant) { //character constant ?
+                CharSequence str = arg.getStr(null);
+                if (str.length() == 1 && str.charAt(0) == '?') {
+                    sparseBindVariablesArgs.add(i, 1);
+                }
+            }
+        }
+
+        ObjList<FunctionFactory> candidates = new ObjList<>(overload.size());  //TODO refactor - allocating
+        FunctionFactory candidate = null;
+        String candidateSignature = null;
+        boolean candidateSigVarArgConst = false;
+        int candidateSigArgCount = 0;
+        int fuzzyMatchCount = 0;
+        int bestMatch = MATCH_NO_MATCH;
+
+
+        for (int i = 0, n = overload.size(); i < n; i++) {
+            final FunctionFactory factory = overload.getQuick(i);
+            final String signature = factory.getSignature();
+            final int sigArgOffset = signature.indexOf('(') + 1;
+            int sigArgCount = signature.length() - 1 - sigArgOffset;
+
+            final boolean sigVarArg;
+            final boolean sigVarArgConst;
+
+            if (sigArgCount > 0) {
+                char c = signature.charAt(sigArgOffset + sigArgCount - 1);
+                sigVarArg = getArgType(Character.toUpperCase(c)) == TypeEx.VAR_ARG;
+            } else {
+                sigVarArg = false;
+                sigVarArgConst = false;
+            }
+
+            if (sigVarArg) {
+                sigArgCount--;
+            }
+
+            if (argCount == 0 && sigArgCount == 0) {
+                // this is no-arg function, match right away
+                //TODO perhaps this is not required if this method is only called on functions with ? - if so will need to assert that it has 1+ arg at least
+                return checkAndCreateFunction(factory, args, node.position, configuration, isNegated, isFlipped);
+            }
+
+            // otherwise, is number of arguments the same?
+            if (sigArgCount == argCount || (sigVarArg && argCount >= sigArgCount)) {
+                int match = MATCH_NO_MATCH; // no match
+                if (sigArgCount == 0) {
+                    match = MATCH_EXACT_MATCH;
+                }
+
+
+                for (int k = 0; k < sigArgCount; k++) {
+                    if (sparseBindVariablesArgs.get(k) == 1) {
+                        continue;
+                    }
+                    final Function arg = args.getQuick(k);
+                    final char c = signature.charAt(sigArgOffset + k);
+
+                    if (Character.isLowerCase(c) && !arg.isConstant()) {
+                        candidateSignature = signature;
+                        match = MATCH_NO_MATCH; // no match
+                        break;
+                    }
+
+                    final int sigArgType = getArgType(c);
+
+                    if (sigArgType == arg.getType()) {
+                        switch (match) {
+                            case MATCH_NO_MATCH: // was it no match
+                                match = MATCH_EXACT_MATCH;
+                                break;
+                            case MATCH_FUZZY_MATCH: // was it fuzzy match ?
+                                match = MATCH_PARTIAL_MATCH; // this is mixed match, fuzzy and exact
+                                break;
+                            default:
+                                // don't change match otherwise
+                                break;
+                        }
+                        continue;
+                    } else if (arg.getType() == ColumnType.STRING && arg instanceof StrConstant) {
+                        CharSequence str = arg.getStr(null);
+                        boolean isBindVariable = str.length() == 1 && str.charAt(0) == '?';
+                        if (isBindVariable) {
+                            continue;
+                        }
+                    }
+
+                    final boolean overloadPossible = (
+                            (arg.getType() >= ColumnType.BYTE)
+                                    && (arg.getType() <= ColumnType.DOUBLE)
+                                    && (sigArgType >= ColumnType.BYTE)
+                                    && (sigArgType <= ColumnType.DOUBLE)
+                                    && (arg.getType() < sigArgType)
+                    ) || ((
+                            (arg.getType() == ColumnType.DOUBLE)
+                                    && arg.isConstant()
+                                    && Double.isNaN(arg.getDouble(null))
+                                    && ((sigArgType == ColumnType.LONG) || (sigArgType == ColumnType.INT))
+                    ) && (!(arg instanceof TypeConstant) || (arg.getType() != sigArgType)));
+
+                    // can we use overload mechanism?
+
+                    if (overloadPossible) {
+                        switch (match) {
+                            case MATCH_NO_MATCH: // no match?
+                                match = MATCH_FUZZY_MATCH; // upgrade to fuzzy match
+                                break;
+                            case MATCH_EXACT_MATCH: // was it full match so far? ? oh, well, fuzzy now
+                                match = MATCH_PARTIAL_MATCH; // downgrade
+                                break;
+                            default:
+                                break; // don't change match otherwise
+                        }
+                    } else {
+                        // types mismatch
+                        candidateSignature = signature;
+                        match = MATCH_NO_MATCH;
+                        break;
+                    }
+                }
+
+                if (match == MATCH_NO_MATCH) {
+                    continue;
+                }
+
+                if (match == MATCH_EXACT_MATCH) {
+                    candidates.add(factory);
+                } else if (candidates.size() == 0 && match >= bestMatch) {
+                    bestMatch = match;
+                    candidate = factory;
+                }
+            }
+        }
+
+        // -------- end of overload loop
+
+        //TODO - move this  below the filtering loop?
+        if (candidates.size() == 0 && candidate != null) {
+            candidates.add(candidate);
+        }
+
+        //--------- start of candidate filtering group
+        IntList candidateArgs = new IntList(argCount);//TODO refactor - allocating
+        candidateArgs.setAll(argCount, -1);
+        for (int i = 0, n = candidates.size(); i < n; i++) {
+            final FunctionFactory factory = candidates.getQuick(i);
+            final String signature = factory.getSignature();
+            final int sigArgOffset = signature.indexOf('(') + 1;
+            int sigArgCount = signature.length() - 1 - sigArgOffset;
+
+            int match = MATCH_NO_MATCH;
+            for (int j = 0; j < sigArgCount; j++) {
+                if (sparseBindVariablesArgs.get(j) == 0) {
+                    continue;
+                }
+
+                final char c = signature.charAt(sigArgOffset + j);
+                final int sigArgType = getArgType(c);
+
+                if (sigArgType > candidateArgs.get(j)) {
+                    candidateArgs.set(j, sigArgType);
+                    match = MATCH_EXACT_MATCH;
+                } else {
+                    match = MATCH_NO_MATCH;
+                    break;
+                }
+            }
+
+
+            if (match == MATCH_EXACT_MATCH) {
+                char c = signature.charAt(sigArgOffset + sigArgCount - 1);
+                final boolean sigVarArgConst = getArgType(Character.toUpperCase(c)) == TypeEx.VAR_ARG;
+
+                candidate = factory;
+                candidateSignature = signature;
+                candidateSigArgCount = sigArgCount;
+                candidateSigVarArgConst = sigVarArgConst;
+            }
+
+        }
+
+        if (fuzzyMatchCount > 1) {
+            // ambiguous invocation target
+            throw invalidFunction("ambiguous function call", node, args);
+        }
+
+        if (candidate == null) {
+            // no signature match
+            if (candidateSignature != null) {
+                final int sigArgOffset = candidateSignature.indexOf('(') + 1;
+                int sigArgCount = candidateSignature.length() - 1 - sigArgOffset;
+                throw invalidArgument(node, args, candidateSignature, sigArgOffset, sigArgCount);
+            } else {
+                throw invalidArgument(node, args, "", 0, 0);
+            }
+        }
+
+        if (candidateSigVarArgConst) {
+            for (int k = candidateSigArgCount; k < argCount; k++) {
+                Function func = args.getQuick(k);
+                if (!func.isConstant()) {
+                    throw SqlException.$(func.getPosition(), "constant expected");
+                }
+            }
+        }
+
+        // substitute NaNs with appropriate types
+        final int sigArgOffset = candidateSignature.indexOf('(') + 1;
+        for (int k = 0; k < candidateSigArgCount; k++) {
+            final Function arg = args.getQuick(k);
+            final char c = candidateSignature.charAt(sigArgOffset + k);
+
+            final int sigArgType = getArgType(c);
+            if (arg.getType() == ColumnType.DOUBLE && arg.isConstant() && Double.isNaN(arg.getDouble(null))) {
+                if (sigArgType == ColumnType.LONG) {
+                    args.setQuick(k, new LongConstant(arg.getPosition(), Numbers.LONG_NaN));
+                } else if (sigArgType == ColumnType.INT) {
+                    args.setQuick(k, new IntConstant(arg.getPosition(), Numbers.INT_NaN));
+                }
+            }
+        }
+
+        LOG.info().$("call ").$(node).$(" -> ").$(candidate.getSignature()).$();
+        return checkAndCreateFunction(candidate, args, node.position, configuration, isNegated, isFlipped);
+    }
+
     private Function createFunction(
             ExpressionNode node,
             @Transient ObjList<Function> args
