@@ -31,6 +31,7 @@ import io.questdb.log.LogFactory;
 import io.questdb.std.*;
 import io.questdb.std.microtime.DateFormatCompiler;
 import io.questdb.std.microtime.TimestampFormat;
+import io.questdb.std.microtime.TimestampFormatUtils;
 import io.questdb.std.microtime.Timestamps;
 import io.questdb.std.str.LPSZ;
 import io.questdb.std.str.Path;
@@ -519,6 +520,18 @@ public final class TableUtils {
             }
         } finally {
             path.trimTo(plen);
+        }
+    }
+
+    public static long toTimestampOrException(CharSequence value) {
+        try {
+            return TimestampFormatUtils.parseTimestamp(value);
+        } catch (NumericException e) {
+            try {
+                return TimestampFormatUtils.parseDateTime(value);
+            } catch (NumericException numericException) {
+                throw CairoException.instance(0).put("could not convert to timestamp [value=").put(value).put(']');
+            }
         }
     }
 

@@ -705,83 +705,6 @@ public class TableWriter implements Closeable {
         LOG.info().$("REMOVED column '").utf8(name).$("' from ").$(path).$();
     }
 
-
-    public void renameColumn(CharSequence currentName, CharSequence newName) {
-
-        checkDistressed();
-
-        final int index = getColumnIndex(currentName);
-        final int type = metadata.getColumnType(index);
-
-        LOG.info().$("renaming column '").utf8(currentName).$("' to '").utf8(newName).$("' from ").$(path).$();
-
-        commit();
-
-        this.metaSwapIndex = renameColumnFromMeta(index, newName);
-
-        // close _meta so we can rename it
-        metaMem.close();
-
-        // rename _meta to _meta.prev
-        renameMetaToMetaPrev(currentName);
-
-        // after we moved _meta to _meta.prev
-        // we have to have _todo to restore _meta should anything go wrong
-        writeRestoreMetaTodo(currentName);
-
-        // rename _meta.swp to _meta
-        renameSwapMetaToMeta(currentName);
-
-        try {
-            // open _meta file
-            openMetaFile();
-
-            // remove _todo
-            removeTodoFile();
-
-            // rename column files has to be done after _todo is removed
-            renameColumnFiles(currentName, newName, type);
-        } catch (CairoException err) {
-            throwDistressException(err);
-        }
-
-        bumpStructureVersion();
-
-        metadata.renameColumn(currentName, newName);
-
-        LOG.info().$("RENAMED column '").utf8(currentName).$("' to '").utf8(newName).$("' from ").$(path).$();
-    }
-
-    private void renameColumnFiles(CharSequence columnName, CharSequence newName, int columnType) {
-        try {
-            ff.iterateDir(path.$(), (file, type) -> {
-                nativeLPSZ.of(file);
-                if (type == Files.DT_DIR && IGNORED_FILES.excludes(nativeLPSZ)) {
-                    path.trimTo(rootLen);
-                    path.concat(nativeLPSZ);
-                    other.trimTo(rootLen);
-                    other.concat(nativeLPSZ);
-                    int plen = path.length();
-                    renameFileOrLog(ff, dFile(path.trimTo(plen), columnName), dFile(other.trimTo(plen), newName));
-                    renameFileOrLog(ff, iFile(path.trimTo(plen), columnName), iFile(other.trimTo(plen), newName));
-                    renameFileOrLog(ff, topFile(path.trimTo(plen), columnName), topFile(other.trimTo(plen), newName));
-                    renameFileOrLog(ff, BitmapIndexUtils.keyFileName(path.trimTo(plen), columnName), BitmapIndexUtils.keyFileName(other.trimTo(plen), newName));
-                    renameFileOrLog(ff, BitmapIndexUtils.valueFileName(path.trimTo(plen), columnName), BitmapIndexUtils.valueFileName(other.trimTo(plen), newName));
-                }
-            });
-
-            if (columnType == ColumnType.SYMBOL) {
-                renameFileOrLog(ff, SymbolMapWriter.offsetFileName(path.trimTo(rootLen), columnName), SymbolMapWriter.offsetFileName(other.trimTo(rootLen), newName));
-                renameFileOrLog(ff, SymbolMapWriter.charFileName(path.trimTo(rootLen), columnName), SymbolMapWriter.charFileName(other.trimTo(rootLen), newName));
-                renameFileOrLog(ff, BitmapIndexUtils.keyFileName(path.trimTo(rootLen), columnName), BitmapIndexUtils.keyFileName(other.trimTo(rootLen), newName));
-                renameFileOrLog(ff, BitmapIndexUtils.valueFileName(path.trimTo(rootLen), columnName), BitmapIndexUtils.valueFileName(other.trimTo(rootLen), newName));
-            }
-        } finally {
-            path.trimTo(rootLen);
-            other.trimTo(rootLen);
-        }
-    }
-
     public boolean removePartition(long timestamp) {
 
         if (partitionBy == PartitionBy.NONE || timestamp < timestampFloorMethod.floor(minTimestamp) || timestamp > maxTimestamp) {
@@ -871,6 +794,52 @@ public class TableWriter implements Closeable {
         } finally {
             path.trimTo(rootLen);
         }
+    }
+
+    public void renameColumn(CharSequence currentName, CharSequence newName) {
+
+        checkDistressed();
+
+        final int index = getColumnIndex(currentName);
+        final int type = metadata.getColumnType(index);
+
+        LOG.info().$("renaming column '").utf8(currentName).$("' to '").utf8(newName).$("' from ").$(path).$();
+
+        commit();
+
+        this.metaSwapIndex = renameColumnFromMeta(index, newName);
+
+        // close _meta so we can rename it
+        metaMem.close();
+
+        // rename _meta to _meta.prev
+        renameMetaToMetaPrev(currentName);
+
+        // after we moved _meta to _meta.prev
+        // we have to have _todo to restore _meta should anything go wrong
+        writeRestoreMetaTodo(currentName);
+
+        // rename _meta.swp to _meta
+        renameSwapMetaToMeta(currentName);
+
+        try {
+            // open _meta file
+            openMetaFile();
+
+            // remove _todo
+            removeTodoFile();
+
+            // rename column files has to be done after _todo is removed
+            renameColumnFiles(currentName, newName, type);
+        } catch (CairoException err) {
+            throwDistressException(err);
+        }
+
+        bumpStructureVersion();
+
+        metadata.renameColumn(currentName, newName);
+
+        LOG.info().$("RENAMED column '").utf8(currentName).$("' to '").utf8(newName).$("' from ").$(path).$();
     }
 
     public void rollback() {
@@ -1936,7 +1905,6 @@ public class TableWriter implements Closeable {
         }
     }
 
-    @SuppressWarnings("unused")
     private void recoverFromMetaRenameFailure(CharSequence columnName) {
         openMetaFile();
     }
@@ -1952,7 +1920,6 @@ public class TableWriter implements Closeable {
         recoverFromSwapRenameFailure(columnName);
     }
 
-    @SuppressWarnings("unused")
     private void recoverFrommTodoWriteFailure(CharSequence columnName) {
         restoreMetaFrom(META_PREV_FILE_NAME, metaPrevIndex);
         openMetaFile();
@@ -2051,37 +2018,6 @@ public class TableWriter implements Closeable {
                     ddlMem.putStr(columnName);
                 }
                 nameOffset += ContiguousVirtualMemory.getStorageLength(columnName);
-            }
-
-            return metaSwapIndex;
-        } finally {
-            ddlMem.close();
-        }
-    }
-
-    private int renameColumnFromMeta(int index, CharSequence newName) {
-        try {
-            int metaSwapIndex = openMetaSwapFile(ff, ddlMem, path, rootLen, fileOperationRetryCount);
-            int timestampIndex = metaMem.getInt(META_OFFSET_TIMESTAMP_INDEX);
-            ddlMem.putInt(columnCount);
-            ddlMem.putInt(partitionBy);
-            ddlMem.putInt(timestampIndex);
-            ddlMem.putInt(ColumnType.VERSION);
-            ddlMem.jumpTo(META_OFFSET_COLUMN_TYPES);
-
-            for (int i = 0; i < columnCount; i++) {
-                writeColumnEntry(i);
-            }
-
-            long nameOffset = getColumnNameOffset(columnCount);
-            for (int i = 0; i < columnCount; i++) {
-                CharSequence columnName = metaMem.getStr(nameOffset);
-                nameOffset += ContiguousVirtualMemory.getStorageLength(columnName);
-
-                if (i == index) {
-                    columnName = newName;
-                }
-                ddlMem.putStr(columnName);
             }
 
             return metaSwapIndex;
@@ -2237,6 +2173,67 @@ public class TableWriter implements Closeable {
         } finally {
             path.trimTo(rootLen);
             other.trimTo(rootLen);
+        }
+    }
+
+    private void renameColumnFiles(CharSequence columnName, CharSequence newName, int columnType) {
+        try {
+            ff.iterateDir(path.$(), (file, type) -> {
+                nativeLPSZ.of(file);
+                if (type == Files.DT_DIR && IGNORED_FILES.excludes(nativeLPSZ)) {
+                    path.trimTo(rootLen);
+                    path.concat(nativeLPSZ);
+                    other.trimTo(rootLen);
+                    other.concat(nativeLPSZ);
+                    int plen = path.length();
+                    renameFileOrLog(ff, dFile(path.trimTo(plen), columnName), dFile(other.trimTo(plen), newName));
+                    renameFileOrLog(ff, iFile(path.trimTo(plen), columnName), iFile(other.trimTo(plen), newName));
+                    renameFileOrLog(ff, topFile(path.trimTo(plen), columnName), topFile(other.trimTo(plen), newName));
+                    renameFileOrLog(ff, BitmapIndexUtils.keyFileName(path.trimTo(plen), columnName), BitmapIndexUtils.keyFileName(other.trimTo(plen), newName));
+                    renameFileOrLog(ff, BitmapIndexUtils.valueFileName(path.trimTo(plen), columnName), BitmapIndexUtils.valueFileName(other.trimTo(plen), newName));
+                }
+            });
+
+            if (columnType == ColumnType.SYMBOL) {
+                renameFileOrLog(ff, SymbolMapWriter.offsetFileName(path.trimTo(rootLen), columnName), SymbolMapWriter.offsetFileName(other.trimTo(rootLen), newName));
+                renameFileOrLog(ff, SymbolMapWriter.charFileName(path.trimTo(rootLen), columnName), SymbolMapWriter.charFileName(other.trimTo(rootLen), newName));
+                renameFileOrLog(ff, BitmapIndexUtils.keyFileName(path.trimTo(rootLen), columnName), BitmapIndexUtils.keyFileName(other.trimTo(rootLen), newName));
+                renameFileOrLog(ff, BitmapIndexUtils.valueFileName(path.trimTo(rootLen), columnName), BitmapIndexUtils.valueFileName(other.trimTo(rootLen), newName));
+            }
+        } finally {
+            path.trimTo(rootLen);
+            other.trimTo(rootLen);
+        }
+    }
+
+    private int renameColumnFromMeta(int index, CharSequence newName) {
+        try {
+            int metaSwapIndex = openMetaSwapFile(ff, ddlMem, path, rootLen, fileOperationRetryCount);
+            int timestampIndex = metaMem.getInt(META_OFFSET_TIMESTAMP_INDEX);
+            ddlMem.putInt(columnCount);
+            ddlMem.putInt(partitionBy);
+            ddlMem.putInt(timestampIndex);
+            ddlMem.putInt(ColumnType.VERSION);
+            ddlMem.jumpTo(META_OFFSET_COLUMN_TYPES);
+
+            for (int i = 0; i < columnCount; i++) {
+                writeColumnEntry(i);
+            }
+
+            long nameOffset = getColumnNameOffset(columnCount);
+            for (int i = 0; i < columnCount; i++) {
+                CharSequence columnName = metaMem.getStr(nameOffset);
+                nameOffset += ContiguousVirtualMemory.getStorageLength(columnName);
+
+                if (i == index) {
+                    columnName = newName;
+                }
+                ddlMem.putStr(columnName);
+            }
+
+            return metaSwapIndex;
+        } finally {
+            ddlMem.close();
         }
     }
 
@@ -2908,23 +2905,12 @@ public class TableWriter implements Closeable {
             putLong(index, value);
         }
 
-        private void notNull(int index) {
-            refs.setQuick(index, masterRef);
+        public void putTimestamp(int index, CharSequence value) {
+            putTimestamp(index, TableUtils.toTimestampOrException(value));
         }
 
-        public void putTimestamp(int index, CharSequence value) {
-            // try UTC timestamp first (micro)
-            long l;
-            try {
-                l = TimestampFormatUtils.parseTimestamp(value);
-            } catch (NumericException e) {
-                try {
-                    l = TimestampFormatUtils.parseDateTime(value);
-                } catch (NumericException numericException) {
-                    throw CairoException.instance(0).put("could not convert to timestamp [value=").put(value).put(']');
-                }
-            }
-            putTimestamp(index, l);
+        private void notNull(int index) {
+            refs.setQuick(index, masterRef);
         }
     }
 
