@@ -36,6 +36,7 @@
 #define AVG_DOUBLE F_AVX512(avgDouble)
 #define MIN_DOUBLE F_AVX512(minDouble)
 #define MAX_DOUBLE F_AVX512(maxDouble)
+#define HAVERSINE_DIST_DEG F_AVX2(haversine_dist_deg)
 
 #define SUM_INT F_AVX512(sumInt)
 #define AVG_INT F_AVX512(avgInt)
@@ -57,6 +58,7 @@
 #define AVG_DOUBLE F_AVX2(avgDouble)
 #define MIN_DOUBLE F_AVX2(minDouble)
 #define MAX_DOUBLE F_AVX2(maxDouble)
+#define HAVERSINE_DIST_DEG F_AVX2(haversine_dist_deg)
 
 #define SUM_INT F_AVX2(sumInt)
 #define AVG_INT F_AVX2(avgInt)
@@ -78,6 +80,7 @@
 #define AVG_DOUBLE F_SSE41(avgDouble)
 #define MIN_DOUBLE F_SSE41(minDouble)
 #define MAX_DOUBLE F_SSE41(maxDouble)
+#define HAVERSINE_DIST_DEG F_SSE41(haversine_dist_deg)
 
 #define SUM_INT F_SSE41(sumInt)
 #define AVG_INT F_SSE41(avgInt)
@@ -99,6 +102,7 @@
 #define AVG_DOUBLE F_SSE2(avgDouble)
 #define MIN_DOUBLE F_SSE2(minDouble)
 #define MAX_DOUBLE F_SSE2(maxDouble)
+#define HAVERSINE_DIST_DEG F_SSE2(haversine_dist_deg)
 
 #define SUM_INT F_SSE2(sumInt)
 #define AVG_INT F_SSE2(avgInt)
@@ -443,7 +447,7 @@ double SUM_DOUBLE_KAHAN(double *d, int64_t count) {
         if (std::isfinite(x)) {
             auto y = x - c;
             auto t = sum + y;
-            c = (t - sum) -y;
+            c = (t - sum) - y;
             sum = t;
         } else {
             nans++;
@@ -598,6 +602,71 @@ double MAX_DOUBLE(double *d, int64_t count) {
     return NAN;
 }
 
+double HAVERSINE_DIST_DEG(double *lat, double *lon, int64_t count) {
+    const double EARTH_RADIUS = 6371; //kms
+    const int step = 7;
+    Vec8d lats;
+    Vec8d lons;
+    Vec8d latsRad;
+    Vec8d lonsRad;
+    Vec8d lats0to6;
+    Vec8d lats1to7;
+    Vec8d lons0to6;
+    Vec8d lons1to7;
+    Vec8d latDistances;
+    Vec8d lonDistances;
+    Vec8d a;
+    Vec8d c;
+    Vec8d distances = 0;
+    auto lastLat = DBL_MAX;
+    auto lastLon = DBL_MAX;
+    int i;
+    for (i = 0; i < count - (step - 1); i += step) {
+        _mm_prefetch(lat + i + 63 * step, _MM_HINT_T1);
+        _mm_prefetch(lon + i + 63 * step, _MM_HINT_T1);
+        lats.load(lat + i);
+        lats = permute8<0, 0,1,2,3,4,5,6>(lats);
+        if (lastLat < DBL_MAX) {
+            lats.insert(0, lastLat);
+            lons.insert(0, lastLon);
+        }
+        lons.load(lat + i);
+        //everything in rads from now on
+        latsRad = lats * M_PI / 180;
+        lonsRad = lons * M_PI / 180;
+        lats0to6 = permute8<0, 1, 2, 3, 4, 5, 6, -1>(latsRad);
+        lats1to7 = permute8<1, 2, 3, 4, 5, 6, 7, -1>(latsRad);
+        lons0to6 = permute8<0, 1, 2, 3, 4, 5, 6, -1>(lonsRad);
+        lons1to7 = permute8<1, 2, 3, 4, 5, 6, 7, -1>(lonsRad);
+        latDistances = (lats1to7 - lats0to6) / 2;
+        lonDistances = (lons1to7 - lons0to6) / 2;
+        a = sin(latDistances) * sin(latDistances) +
+            cos(lats0to6) * cos(lats1to7) * sin(lonDistances) * sin(lonDistances);
+        c = 2 * atan2(sqrt(a), sqrt(1 - a));
+        distances += EARTH_RADIUS * c;
+        lastLat = lats.extract(7);
+        lastLon = lons.extract(7);
+    }
+
+    double remainderDistance = 0;
+    for (; i < count; i++) {
+        double nextLatRad = *(lat + i) * M_PI / 180;
+        double nextLonRad = *(lon + i) * M_PI / 180;
+        double lastLatRad = lastLat * M_PI / 180;
+        double lastLonRad = lastLon * M_PI / 180;
+        double latDistance = (nextLatRad - lastLatRad) / 2;
+        double lonDistance = (nextLonRad - lastLonRad) / 2;
+        double a2 = sin(latDistance) * sin(latDistance) +
+                    cos(lastLatRad) * cos(nextLatRad) * sin(lonDistance) * sin(lonDistance);
+        double c2 = 2 * atan2(sqrt(a2), sqrt(1 - a2));
+        remainderDistance += EARTH_RADIUS * c2;
+    }
+
+    distances = permute8<0,1,2,3,4,5,6,-1>(distances);
+    return (horizontal_add(distances) + remainderDistance);
+
+}
+
 #endif
 
 #if INSTRSET < 5
@@ -609,6 +678,7 @@ DOUBLE_DISPATCHER(sumDoubleNeumaier)
 DOUBLE_DISPATCHER(avgDouble)
 DOUBLE_DISPATCHER(minDouble)
 DOUBLE_DISPATCHER(maxDouble)
+DOUBLE_DISPATCHER(haversine_dist_deg)
 
 INT_LONG_DISPATCHER(sumInt)
 INT_BOOL_DISPATCHER(hasNull)

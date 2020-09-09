@@ -27,6 +27,7 @@
 
 #include <jni.h>
 #include "vcl/vectorclass.h"
+#include "vcl/vectormath_trig.h"
 #include "vec_agg_vanilla.h"
 #include "vec_dispatch.h"
 
