@@ -749,6 +749,15 @@ public final class Numbers {
         return parseInt0(sequence, p, lim);
     }
 
+    public static boolean isInt(CharSequence sequence, int p, int lim) {
+        try {
+            parseInt(sequence, p, lim);
+        } catch (NumericException e) {
+            return false;
+        }
+        return true;
+    }
+
     public static int parseIntQuiet(CharSequence sequence) {
         try {
             if (sequence == null || Chars.equals("NaN", sequence)) {

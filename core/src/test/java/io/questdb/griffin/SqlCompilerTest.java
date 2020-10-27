@@ -24,13 +24,24 @@
 
 package io.questdb.griffin;
 
-import io.questdb.cairo.*;
+import io.questdb.cairo.CairoConfiguration;
+import io.questdb.cairo.CairoEngine;
+import io.questdb.cairo.CairoException;
+import io.questdb.cairo.CairoSecurityContext;
+import io.questdb.cairo.ColumnType;
+import io.questdb.cairo.DefaultCairoConfiguration;
+import io.questdb.cairo.PartitionBy;
+import io.questdb.cairo.SymbolMapReader;
+import io.questdb.cairo.TableReader;
+import io.questdb.cairo.TableUtils;
+import io.questdb.cairo.TableWriter;
 import io.questdb.cairo.security.AllowAllCairoSecurityContext;
 import io.questdb.cairo.sql.RecordCursor;
 import io.questdb.cairo.sql.RecordCursorFactory;
 import io.questdb.griffin.engine.functions.rnd.SharedRandom;
 import io.questdb.log.Log;
 import io.questdb.log.LogFactory;
+import io.questdb.std.CharSequenceHashSet;
 import io.questdb.std.Chars;
 import io.questdb.std.FilesFacade;
 import io.questdb.std.FilesFacadeImpl;
@@ -38,15 +49,14 @@ import io.questdb.std.Rnd;
 import io.questdb.std.str.LPSZ;
 import io.questdb.std.str.Path;
 import io.questdb.test.tools.TestUtils;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
-
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Test;
 
 import static io.questdb.griffin.CompiledQuery.SET;
 
@@ -3191,6 +3201,15 @@ public class SqlCompilerTest extends AbstractGriffinTest {
         });
     }
 
+    @Test
+    public void testUpdate() throws Exception {
+        CharSequenceHashSet setUp = new CharSequenceHashSet() {{
+            add("create table x as (select rnd_boolean() a, rnd_boolean() b, rnd_timestamp(10, 20, 2) ts from long_sequence(2))");
+        }};
+
+        assertUpdate(setUp, "update x SET a = false WHERE b");
+    }
+
     private void assertCast(String expectedData, String expectedMeta, String sql) throws SqlException {
         compiler.compile(sql, sqlExecutionContext);
         try (TableReader reader = engine.getReader(AllowAllCairoSecurityContext.INSTANCE, "y", TableUtils.ANY_TABLE_VERSION)) {
@@ -3508,6 +3527,17 @@ public class SqlCompilerTest extends AbstractGriffinTest {
                 engine.releaseAllWriters();
                 engine.releaseAllReaders();
             }
+        });
+    }
+
+
+    public void assertUpdate(final CharSequenceHashSet ddls, final CharSequence update) throws Exception {
+        assertMemoryLeak(() -> {
+            for(int idx = 0; idx < ddls.size(); idx++) {
+                compiler.compile(ddls.get(idx), sqlExecutionContext);
+            }
+
+            compiler.compile(update, sqlExecutionContext);
         });
     }
 

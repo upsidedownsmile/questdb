@@ -25,8 +25,34 @@
 package io.questdb.griffin;
 
 import io.questdb.MessageBus;
-import io.questdb.cairo.*;
-import io.questdb.cairo.sql.*;
+import io.questdb.cairo.AppendMemory;
+import io.questdb.cairo.CairoConfiguration;
+import io.questdb.cairo.CairoEngine;
+import io.questdb.cairo.CairoError;
+import io.questdb.cairo.CairoException;
+import io.questdb.cairo.CairoSecurityContext;
+import io.questdb.cairo.ColumnFilter;
+import io.questdb.cairo.ColumnType;
+import io.questdb.cairo.ColumnTypes;
+import io.questdb.cairo.DefaultLifecycleManager;
+import io.questdb.cairo.EntityColumnFilter;
+import io.questdb.cairo.GenericRecordMetadata;
+import io.questdb.cairo.ListColumnFilter;
+import io.questdb.cairo.PartitionBy;
+import io.questdb.cairo.SymbolMapReader;
+import io.questdb.cairo.SymbolMapWriter;
+import io.questdb.cairo.TableReader;
+import io.questdb.cairo.TableReaderMetadata;
+import io.questdb.cairo.TableStructure;
+import io.questdb.cairo.TableUtils;
+import io.questdb.cairo.TableWriter;
+import io.questdb.cairo.sql.Function;
+import io.questdb.cairo.sql.ReaderOutOfDateException;
+import io.questdb.cairo.sql.Record;
+import io.questdb.cairo.sql.RecordCursor;
+import io.questdb.cairo.sql.RecordCursorFactory;
+import io.questdb.cairo.sql.RecordMetadata;
+import io.questdb.cairo.sql.VirtualRecord;
 import io.questdb.cutlass.text.Atomicity;
 import io.questdb.cutlass.text.TextException;
 import io.questdb.cutlass.text.TextLoader;
@@ -34,20 +60,57 @@ import io.questdb.griffin.engine.functions.catalogue.ShowStandardConformingStrin
 import io.questdb.griffin.engine.functions.catalogue.ShowTransactionIsolationLevelCursorFactory;
 import io.questdb.griffin.engine.table.ShowColumnsRecordCursorFactory;
 import io.questdb.griffin.engine.table.TableListRecordCursorFactory;
-import io.questdb.griffin.model.*;
+import io.questdb.griffin.model.ColumnCastModel;
+import io.questdb.griffin.model.CopyModel;
+import io.questdb.griffin.model.CreateTableModel;
+import io.questdb.griffin.model.ExecutionModel;
+import io.questdb.griffin.model.ExpressionNode;
+import io.questdb.griffin.model.InsertModel;
+import io.questdb.griffin.model.QueryColumn;
+import io.questdb.griffin.model.QueryModel;
+import io.questdb.griffin.model.RenameTableModel;
+import io.questdb.griffin.model.UpdateModel;
 import io.questdb.log.Log;
 import io.questdb.log.LogFactory;
-import io.questdb.std.*;
+import io.questdb.std.BytecodeAssembler;
+import io.questdb.std.CharSequenceHashSet;
+import io.questdb.std.CharSequenceObjHashMap;
+import io.questdb.std.Chars;
+import io.questdb.std.Files;
+import io.questdb.std.FilesFacade;
+import io.questdb.std.FindVisitor;
+import io.questdb.std.GenericLexer;
+import io.questdb.std.IntIntHashMap;
+import io.questdb.std.IntList;
+import io.questdb.std.Misc;
+import io.questdb.std.Numbers;
+import io.questdb.std.NumericException;
+import io.questdb.std.ObjHashSet;
+import io.questdb.std.ObjList;
+import io.questdb.std.ObjectPool;
+import io.questdb.std.Os;
+import io.questdb.std.Sinkable;
+import io.questdb.std.Transient;
+import io.questdb.std.Unsafe;
 import io.questdb.std.microtime.TimestampFormat;
 import io.questdb.std.str.NativeLPSZ;
 import io.questdb.std.str.Path;
+import java.io.Closeable;
+import java.util.ServiceLoader;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.io.Closeable;
-import java.util.ServiceLoader;
-
-import static io.questdb.griffin.SqlKeywords.*;
+import static io.questdb.griffin.SqlKeywords.isCapacityKeyword;
+import static io.questdb.griffin.SqlKeywords.isColumnsKeyword;
+import static io.questdb.griffin.SqlKeywords.isDatabaseKeyword;
+import static io.questdb.griffin.SqlKeywords.isFromKeyword;
+import static io.questdb.griffin.SqlKeywords.isIsolationKeyword;
+import static io.questdb.griffin.SqlKeywords.isLevelKeyword;
+import static io.questdb.griffin.SqlKeywords.isOnlyKeyword;
+import static io.questdb.griffin.SqlKeywords.isStandardConformingStringsKeyword;
+import static io.questdb.griffin.SqlKeywords.isTableKeyword;
+import static io.questdb.griffin.SqlKeywords.isTablesKeyword;
+import static io.questdb.griffin.SqlKeywords.isTransactionKeyword;
 
 
 public class SqlCompiler implements Closeable {
@@ -92,6 +155,7 @@ public class SqlCompiler implements Closeable {
     private final Path renamePath = new Path();
     private final AppendMemory mem = new AppendMemory();
     private final BytecodeAssembler asm = new BytecodeAssembler();
+    private final BytecodeAssembler asm2 = new BytecodeAssembler();
     private final MessageBus messageBus;
     private final CairoEngine engine;
     private final ListColumnFilter listColumnFilter = new ListColumnFilter();
@@ -109,6 +173,7 @@ public class SqlCompiler implements Closeable {
     private final ObjHashSet<CharSequence> tableNames = new ObjHashSet<>();
     private final NativeLPSZ nativeLPSZ = new NativeLPSZ();
     private final CharSequenceObjHashMap<RecordToRowCopier> tableBackupRowCopieCache = new CharSequenceObjHashMap<>();
+    private final ImplicitLatestByFromWhereClause latestByFromWhereClause = new ImplicitLatestByFromWhereClause();
     private transient SqlExecutionContext currentExecutionContext;
     private transient String cachedTmpBackupRoot;
     private final FindVisitor sqlDatabaseBackupOnFind = (file, type) -> {
@@ -1252,6 +1317,8 @@ public class SqlCompiler implements Closeable {
                 final RenameTableModel rtm = (RenameTableModel) executionModel;
                 engine.rename(executionContext.getCairoSecurityContext(), path, GenericLexer.unquote(rtm.getFrom().token), renamePath, GenericLexer.unquote(rtm.getTo().token));
                 return compiledQuery.ofRenameTable();
+            case ExecutionModel.UPDATE:
+                return update(executionModel, executionContext);
             default:
                 InsertModel insertModel = (InsertModel) executionModel;
                 if (insertModel.getQueryModel() != null) {
@@ -1691,6 +1758,87 @@ public class SqlCompiler implements Closeable {
             }
         }
         return compiledQuery.ofInsertAsSelect();
+    }
+
+    private CompiledQuery update(ExecutionModel executionModel, SqlExecutionContext executionContext) throws SqlException {
+        final UpdateModel updateModel = (UpdateModel) executionModel;
+        final ExpressionNode name = updateModel.getTableName();
+        tableExistsOrFail(name.position, name.token, executionContext);
+
+        try (TableWriter writer = engine.getWriter(executionContext.getCairoSecurityContext(), name.token)) {
+
+            final RecordMetadata tableMetadata = writer.getMetadata();
+            final int writerTimestampIndex = tableMetadata.getTimestampIndex();
+            final QueryModel query = updateModel.getQueryModel();
+            final InsertModel insert = updateModel.getInsertModel();
+
+            ObjList<ExpressionNode> values = insert.getColumnValues();
+            ObjList<Function> valueFunctions = new ObjList<>(values.size());
+            Function timestampFunction = null;
+            for (int idx = 0; idx < values.size(); idx++) {
+                Function function = functionParser.parseFunction(values.getQuick(idx), EmptyRecordMetadata.INSTANCE, executionContext);
+                if (functionIsTimestamp(
+                        insert,
+                        valueFunctions,
+                        tableMetadata,
+                        writerTimestampIndex,
+                        idx,
+                        tableMetadata.getColumnIndex(insert.getColumnSet().get(idx)),
+                        function
+                )) {
+                    timestampFunction = function;
+                }
+            }
+
+
+            ListColumnFilter insertFilter = new ListColumnFilter();
+
+            for (int idx = 0; idx < insert.getColumnSet().size(); idx++) {
+                final CharSequence columnName = insert.getColumnSet().get(idx);
+
+                if (tableMetadata.getColumnIndexQuiet(columnName) == -1) {
+                    throw SqlException.invalidColumn(insert.getColumnPosition(idx), columnName);
+                }
+                insertFilter.add(idx);
+            }
+
+            final ListColumnFilter selectFilter = new ListColumnFilter();
+            for(int idx = 0; idx < tableMetadata.getColumnCount(); idx++) {
+                final CharSequence columnName = tableMetadata.getColumnName(idx);
+
+                if (!insert.getColumnSet().contains(columnName)) {
+                    query.addBottomUpColumn(createQueryColumn(columnName));
+                    selectFilter.add(idx);
+                }
+            }
+
+            latestByFromWhereClause.set(query, tableMetadata);
+            QueryModel optimisedModel = optimiser.optimise(updateModel.getQueryModel(), executionContext);
+            updateModel.setQueryModel(optimisedModel);
+
+            ColumnTypes insertColumnTypes = new VirtualRecord(valueFunctions);
+            final RecordToRowCopier insertCopier = assembleRecordToRowCopier(asm2, insertColumnTypes, tableMetadata, insertFilter);
+            RecordCursorFactory factory = generate(query, executionContext);
+            RecordMetadata selectMetadata = factory.getMetadata();
+            final RecordToRowCopier selectCopier = assembleRecordToRowCopier(asm, selectMetadata, tableMetadata, selectFilter);
+
+            try (RecordCursor cursor = factory.getCursor(executionContext)) {
+                final Record record = cursor.getRecord();
+                while (cursor.hasNext()) {
+                    TableWriter.Row row = writer.newRow();
+                    selectCopier.copy(record, row);
+                    insertCopier.copy(record, row);
+                    row.append();
+                }
+                writer.commit();
+            }
+        }
+
+        return compiledQuery.ofUpdate();
+    }
+
+    private QueryColumn createQueryColumn(CharSequence columnName) {
+        return queryColumnPool.next().of(columnName, sqlNodePool.next().of(ExpressionNode.LITERAL, columnName, Integer.MIN_VALUE, 0));
     }
 
     private ExecutionModel lightlyValidateInsertModel(InsertModel model) throws SqlException {
@@ -2155,6 +2303,43 @@ public class SqlCompiler implements Closeable {
             this.metadata = metadata;
             this.typeCast = typeCast;
             return this;
+        }
+    }
+
+    private static class ImplicitLatestByFromWhereClause implements PostOrderTreeTraversalAlgo.Visitor {
+        private final PostOrderTreeTraversalAlgo traverseAlgo = new PostOrderTreeTraversalAlgo();
+        private RecordMetadata metadata;
+        private QueryModel model;
+
+        public void set(final QueryModel model, RecordMetadata metadata) throws SqlException {
+            this.model = model;
+            this.metadata = metadata;
+            try {
+                traverseAlgo.traverse(model.getNestedModel().getWhereClause(), this);
+            } finally {
+                this.metadata = null;
+                this.model = null;
+            }
+        }
+
+        @Override
+        public void visit(final ExpressionNode node) throws SqlException {
+            if(node.paramCount == 0 && node.type == ExpressionNode.LITERAL && !Chars.startsWith(node.token, ':')) {
+
+                if(Chars.startsWith(node.token, '$') && !Numbers.isInt(node.token, 1, node.token.length())) {
+                    model.addLatestBy(isValidColumn(node));
+                }
+                model.addLatestBy(isValidColumn(node));
+            }
+        }
+
+        private ExpressionNode isValidColumn(ExpressionNode node) throws SqlException {
+            final int index = metadata.getColumnIndexQuiet(node.token);
+
+            if (index == -1) {
+                throw SqlException.invalidColumn(node.position, node.token);
+            }
+            return node;
         }
     }
 }

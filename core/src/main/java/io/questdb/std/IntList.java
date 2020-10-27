@@ -48,9 +48,9 @@ public class IntList implements Mutable {
     }
 
     public void add(int index, int element) {
-        ensureCapacity(++pos);
-        System.arraycopy(buffer, index, buffer, index + 1, pos - index - 1);
+        ensureCapacity(index+1);
         buffer[index] = element;
+        pos = index+1;
     }
 
     public void addAll(IntList that) {

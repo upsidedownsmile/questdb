@@ -138,6 +138,7 @@ public class PropServerConfiguration implements ServerConfiguration {
     private final int sqlRenameTableModelPoolCapacity;
     private final int sqlWithClauseModelPoolCapacity;
     private final int sqlInsertModelPoolCapacity;
+    private final int sqlUpdateModelPoolCapacity;
     private final int sqlGroupByPoolCapacity;
     private final int sqlGroupByMapCapacity;
     private final int sqlMaxSymbolNotEqualsCount;
@@ -453,6 +454,7 @@ public class PropServerConfiguration implements ServerConfiguration {
         this.sqlRenameTableModelPoolCapacity = getInt(properties, env, "cairo.sql.rename.table.model.pool.capacity", 16);
         this.sqlWithClauseModelPoolCapacity = getInt(properties, env, "cairo.sql.with.clause.model.pool.capacity", 128);
         this.sqlInsertModelPoolCapacity = getInt(properties, env, "cairo.sql.insert.model.pool.capacity", 64);
+        this.sqlUpdateModelPoolCapacity = getInt(properties, env, "cairo.sql.update.pool.capacity", 64);
         this.sqlCopyModelPoolCapacity = getInt(properties, env, "cairo.sql.copy.model.pool.capacity", 32);
         this.sqlCopyBufferSize = getIntSize(properties, env, "cairo.sql.copy.buffer.size", 2 * 1024 * 1024);
         long sqlAppendPageSize = getLongSize(properties, env, "cairo.sql.append.page.size", 16 * 1024 * 1024);
@@ -1457,6 +1459,11 @@ public class PropServerConfiguration implements ServerConfiguration {
         @Override
         public long getAppendPageSize() {
             return sqlAppendPageSize;
+        }
+
+        @Override
+        public int getUpdatePoolCapacity() {
+            return sqlUpdateModelPoolCapacity;
         }
     }
 
