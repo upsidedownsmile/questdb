@@ -28,12 +28,69 @@ import io.questdb.cairo.CairoConfiguration;
 import io.questdb.cairo.ColumnType;
 import io.questdb.cairo.PartitionBy;
 import io.questdb.cairo.TableUtils;
-import io.questdb.griffin.model.*;
-import io.questdb.std.*;
+import io.questdb.griffin.model.AnalyticColumn;
+import io.questdb.griffin.model.ColumnCastModel;
+import io.questdb.griffin.model.CopyModel;
+import io.questdb.griffin.model.CreateTableModel;
+import io.questdb.griffin.model.ExecutionModel;
+import io.questdb.griffin.model.ExpressionNode;
+import io.questdb.griffin.model.InsertModel;
+import io.questdb.griffin.model.QueryColumn;
+import io.questdb.griffin.model.QueryModel;
+import io.questdb.griffin.model.RenameTableModel;
+import io.questdb.griffin.model.UpdateModel;
+import io.questdb.griffin.model.WithClauseModel;
+import io.questdb.std.Chars;
+import io.questdb.std.GenericLexer;
+import io.questdb.std.LowerCaseAsciiCharSequenceHashSet;
+import io.questdb.std.LowerCaseAsciiCharSequenceIntHashMap;
+import io.questdb.std.LowerCaseCharSequenceObjHashMap;
+import io.questdb.std.Numbers;
+import io.questdb.std.NumericException;
+import io.questdb.std.ObjList;
+import io.questdb.std.ObjectPool;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import static io.questdb.griffin.SqlKeywords.*;
+import static io.questdb.griffin.SqlKeywords.isAllKeyword;
+import static io.questdb.griffin.SqlKeywords.isAsKeyword;
+import static io.questdb.griffin.SqlKeywords.isAscKeyword;
+import static io.questdb.griffin.SqlKeywords.isByKeyword;
+import static io.questdb.griffin.SqlKeywords.isCacheKeyword;
+import static io.questdb.griffin.SqlKeywords.isCapacityKeyword;
+import static io.questdb.griffin.SqlKeywords.isCaseKeyword;
+import static io.questdb.griffin.SqlKeywords.isCastKeyword;
+import static io.questdb.griffin.SqlKeywords.isCopyKeyword;
+import static io.questdb.griffin.SqlKeywords.isCountKeyword;
+import static io.questdb.griffin.SqlKeywords.isCreateKeyword;
+import static io.questdb.griffin.SqlKeywords.isDescKeyword;
+import static io.questdb.griffin.SqlKeywords.isDistinctKeyword;
+import static io.questdb.griffin.SqlKeywords.isExceptKeyword;
+import static io.questdb.griffin.SqlKeywords.isFillKeyword;
+import static io.questdb.griffin.SqlKeywords.isFromKeyword;
+import static io.questdb.griffin.SqlKeywords.isGroupKeyword;
+import static io.questdb.griffin.SqlKeywords.isHeaderKeyword;
+import static io.questdb.griffin.SqlKeywords.isIndexKeyword;
+import static io.questdb.griffin.SqlKeywords.isInsertKeyword;
+import static io.questdb.griffin.SqlKeywords.isIntersectKeyword;
+import static io.questdb.griffin.SqlKeywords.isJoinKeyword;
+import static io.questdb.griffin.SqlKeywords.isLatestKeyword;
+import static io.questdb.griffin.SqlKeywords.isLimitKeyword;
+import static io.questdb.griffin.SqlKeywords.isNoCacheKeyword;
+import static io.questdb.griffin.SqlKeywords.isOnKeyword;
+import static io.questdb.griffin.SqlKeywords.isOrderKeyword;
+import static io.questdb.griffin.SqlKeywords.isOverKeyword;
+import static io.questdb.griffin.SqlKeywords.isPartitionKeyword;
+import static io.questdb.griffin.SqlKeywords.isRenameKeyword;
+import static io.questdb.griffin.SqlKeywords.isSampleKeyword;
+import static io.questdb.griffin.SqlKeywords.isSelectKeyword;
+import static io.questdb.griffin.SqlKeywords.isTimestampKeyword;
+import static io.questdb.griffin.SqlKeywords.isTrueKeyword;
+import static io.questdb.griffin.SqlKeywords.isUnionKeyword;
+import static io.questdb.griffin.SqlKeywords.isUpdateKeyword;
+import static io.questdb.griffin.SqlKeywords.isValuesKeyword;
+import static io.questdb.griffin.SqlKeywords.isWhereKeyword;
+import static io.questdb.griffin.SqlKeywords.isWithKeyword;
 
 public final class SqlParser {
 
@@ -101,6 +158,7 @@ public final class SqlParser {
     private final ObjectPool<RenameTableModel> renameTableModelPool;
     private final ObjectPool<WithClauseModel> withClauseModelPool;
     private final ObjectPool<InsertModel> insertModelPool;
+    private final ObjectPool<UpdateModel> updateModelPool;
     private final ObjectPool<CopyModel> copyModelPool;
     private final ExpressionParser expressionParser;
     private final CairoConfiguration configuration;
@@ -131,6 +189,7 @@ public final class SqlParser {
         this.renameTableModelPool = new ObjectPool<>(RenameTableModel.FACTORY, configuration.getRenameTableModelPoolCapacity());
         this.withClauseModelPool = new ObjectPool<>(WithClauseModel.FACTORY, configuration.getWithClauseModelPoolCapacity());
         this.insertModelPool = new ObjectPool<>(InsertModel.FACTORY, configuration.getInsertPoolCapacity());
+        this.updateModelPool = new ObjectPool<>(UpdateModel.FACTORY, configuration.getUpdatePoolCapacity());
         this.copyModelPool = new ObjectPool<>(CopyModel.FACTORY, configuration.getCopyPoolCapacity());
         this.configuration = configuration;
         this.traversalAlgo = traversalAlgo;
@@ -323,6 +382,10 @@ public final class SqlParser {
 
         if (isCopyKeyword(tok)) {
             return parseCopy(lexer);
+        }
+
+        if (isUpdateKeyword(tok)) {
+            return parseUpdate(lexer);
         }
 
         return parseSelect(lexer);
@@ -1103,6 +1166,54 @@ public final class SqlParser {
             return model;
         }
         throw err(lexer, "'select' or 'values' expected");
+    }
+
+    private ExecutionModel parseUpdate(final GenericLexer lexer) throws SqlException {
+        final UpdateModel updateModel = updateModelPool.next();
+        updateModel.setTableName(expectLiteral(lexer));
+
+        expectTok(lexer, "set");
+        CharSequence tok;
+        do {
+            tok = tok(lexer, "column");
+            if (isWhereKeyword(tok)) {
+                throw err(lexer, "missing column name");
+            }
+
+            if (!updateModel.addColumn(GenericLexer.immutableOf(GenericLexer.unquote(tok)), lexer.lastTokenPosition())) {
+                throw SqlException.position(lexer.lastTokenPosition()).put("duplicate column name: ").put(tok);
+            }
+
+            expectTok(lexer, '=');
+
+            ExpressionNode expr = expectExpr(lexer);
+            updateModel.addColumnValue(expr);
+
+        } while (Chars.equals(tok = tok(lexer, "',' or 'where'"), ','));
+
+        final QueryModel queryModel = queryModelPool.next();
+        if(isWhereKeyword(tok)) {
+            ExpressionNode expr = expr(lexer, queryModel);
+            if (expr != null) {
+                queryModel.setWhereClause(expr);
+            } else {
+                throw SqlException.$((lexer.lastTokenPosition()), "empty where clause");
+            }
+        } else {
+            throw SqlException.position(lexer.getPosition()).put("'where' expected");
+        }
+
+        updateModel.setQueryModel(queryModel);
+
+        return updateModel;
+    }
+
+    private void parseSet(final GenericLexer lexer, final UpdateModel model) throws SqlException {
+
+    }
+
+    private void parseWhere(final GenericLexer lexer, final QueryModel model) throws SqlException {
+
     }
 
     private void parseLatestBy(GenericLexer lexer, QueryModel model) throws SqlException {

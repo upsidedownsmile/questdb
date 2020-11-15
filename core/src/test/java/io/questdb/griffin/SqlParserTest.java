@@ -24,12 +24,23 @@
 
 package io.questdb.griffin;
 
-import io.questdb.cairo.*;
+import io.questdb.cairo.CairoConfiguration;
+import io.questdb.cairo.CairoEngine;
+import io.questdb.cairo.CairoTestUtils;
+import io.questdb.cairo.ColumnType;
+import io.questdb.cairo.DefaultCairoConfiguration;
+import io.questdb.cairo.PartitionBy;
+import io.questdb.cairo.TableModel;
+import io.questdb.cairo.TableUtils;
 import io.questdb.cairo.security.AllowAllCairoSecurityContext;
 import io.questdb.cairo.sql.RecordMetadata;
 import io.questdb.griffin.model.ExecutionModel;
 import io.questdb.griffin.model.QueryModel;
-import io.questdb.std.*;
+import io.questdb.std.Chars;
+import io.questdb.std.Files;
+import io.questdb.std.FilesFacade;
+import io.questdb.std.FilesFacadeImpl;
+import io.questdb.std.Sinkable;
 import io.questdb.std.str.LPSZ;
 import io.questdb.std.str.Path;
 import io.questdb.test.tools.TestUtils;
@@ -5415,6 +5426,77 @@ public class SqlParserTest extends AbstractGriffinTest {
         );
     }
 
+    @Test
+    public void testUpdateQuery() throws SqlException {
+        assertUpdate(
+                "update tableName set ts = systimestamp(), c = 999 where a = y",
+                "UPDATE tableName SET ts=systimestamp(), c=999 WHERE a=y;"
+        );
+    }
+
+    @Test
+    public void testUpdateQueryWithoutKeywordSet() throws Exception {
+        assertSyntaxError(
+                "update tableName ts = systimestamp(), c = 999 where a = y",
+                17,
+                "'set' expected"
+        );
+    }
+
+    @Test
+    public void testUpdateQueryWithoutSetClause() throws Exception {
+        assertSyntaxError(
+                "update tableName where a = y",
+                17,
+                "'set' expected"
+        );
+    }
+
+    @Test
+    public void testUpdateQueryWithoutWhereClause() throws Exception {
+        assertSyntaxError(
+                "update tableName set ts = systimestamp(), c = 999",
+                49,
+                "',' or 'where' expected"
+        );
+    }
+
+    @Test
+    public void testUpdateQueryWithoutWhereKeyword() throws Exception {
+        assertSyntaxError(
+                "update tableName set ts = systimestamp(), c = 999 a = y",
+                52,
+                "'where' expected"
+        );
+    }
+
+    @Test
+    public void testUpdateQueryWithMissingEquals() throws Exception {
+        assertSyntaxError(
+                "update tableName set ts systimestamp(), c = 999 where a = y",
+                24,
+                "'=' expected"
+        );
+    }
+
+    @Test
+    public void testUpdateQueryWithMissingCommas() throws Exception {
+        assertSyntaxError(
+                "update tableName set ts = systimestamp() c = 999 where a = y",
+                43,
+                "'where' expected"
+        );
+    }
+
+    @Test
+    public void testUpdateQueryWithoutTableName() throws Exception {
+        assertSyntaxError(
+                "update set ts = systimestamp(), c = 999 where a = y",
+                11,
+                "'set' expected"
+        );
+    }
+
     private static void assertSyntaxError(
             SqlCompiler compiler,
             String query,
@@ -5478,6 +5560,10 @@ public class SqlParserTest extends AbstractGriffinTest {
 
     private void assertQuery(String expected, String query, TableModel... tableModels) throws SqlException {
         assertModel(expected, query, ExecutionModel.QUERY, tableModels);
+    }
+
+    private void assertUpdate(String expected, String query, TableModel... tableModels) throws SqlException {
+        assertModel(expected, query, ExecutionModel.UPDATE, tableModels);
     }
 
     private void createModelsAndRun(CairoAware runnable, TableModel... tableModels) throws SqlException {

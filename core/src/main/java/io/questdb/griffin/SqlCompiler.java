@@ -1277,6 +1277,8 @@ public class SqlCompiler implements Closeable {
                 final RenameTableModel rtm = (RenameTableModel) executionModel;
                 engine.rename(executionContext.getCairoSecurityContext(), path, GenericLexer.unquote(rtm.getFrom().token), renamePath, GenericLexer.unquote(rtm.getTo().token));
                 return compiledQuery.ofRenameTable();
+            case ExecutionModel.UPDATE:
+                return compiledQuery.ofUpdate();
             default:
                 InsertModel insertModel = (InsertModel) executionModel;
                 if (insertModel.getQueryModel() != null) {

@@ -1023,4 +1023,29 @@ public class SqlKeywords {
                 && (tok.charAt(i) | 32) == 'l'
                 ;
     }
+
+    public static boolean isUpdateKeyword(CharSequence tok) {
+        if (tok.length() != 6) {
+            return false;
+        }
+
+        int i = 0;
+        return (tok.charAt(i++) | 32) == 'u'
+                && (tok.charAt(i++) | 32) == 'p'
+                && (tok.charAt(i++) | 32) == 'd'
+                && (tok.charAt(i++) | 32) == 'a'
+                && (tok.charAt(i++) | 32) == 't'
+                && (tok.charAt(i) | 32) == 'e';
+    }
+
+    public static boolean isSetKeyword(CharSequence tok) {
+        if (tok.length() != 3) {
+            return false;
+        }
+
+        int i = 0;
+        return (tok.charAt(i++) | 32) == 's'
+                && (tok.charAt(i++) | 32) == 'e'
+                && (tok.charAt(i++) | 32) == 't';
+    }
 }

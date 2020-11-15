@@ -363,6 +363,11 @@ public class DefaultCairoConfiguration implements CairoConfiguration {
     }
 
     @Override
+    public int getUpdatePoolCapacity() {
+        return 8;
+    }
+
+    @Override
     public int getCommitMode() {
         return CommitMode.NOSYNC;
     }

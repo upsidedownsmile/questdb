@@ -169,6 +169,8 @@ public interface CairoConfiguration {
 
     int getInsertPoolCapacity();
 
+    int getUpdatePoolCapacity();
+
     int getCommitMode();
 
     DateLocale getDefaultDateLocale();
